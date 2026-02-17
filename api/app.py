@@ -93,7 +93,20 @@ def get_google_sheets_service():
         )
 
         print("Debug - Building service...")
-        return build('sheets', 'v4', credentials=creds)
+        service = build('sheets', 'v4', credentials=creds)
+
+        # Test the service with a simple call
+        print("Debug - Testing service...")
+        try:
+            # Try to get spreadsheet metadata
+            test_id = os.getenv('GOOGLE_SPREADSHEET_ID', '').strip('"\'')
+            if test_id:
+                spreadsheet = service.spreadsheets().get(spreadsheetId=test_id).execute()
+                print(f"Debug - Service test successful, found spreadsheet: {spreadsheet.get('properties', {}).get('title', 'Unknown')}")
+        except Exception as test_error:
+            print(f"Debug - Service test failed: {test_error}")
+
+        return service
 
     except Exception as e:
         print(f"Google Sheets service error: {e}")
@@ -104,6 +117,11 @@ def get_books_data():
     spreadsheet_id = os.getenv('GOOGLE_SPREADSHEET_ID')
     if not spreadsheet_id:
         raise Exception("GOOGLE_SPREADSHEET_ID not configured")
+
+    # Clean spreadsheet ID - remove quotes if present
+    spreadsheet_id = spreadsheet_id.strip('"\'')
+
+    print(f"Debug - cleaned spreadsheet_id: {spreadsheet_id}")
 
     service = get_google_sheets_service()
     if not service:
@@ -190,20 +208,91 @@ def get_categories():
         'error': None
     })
 
+@app.route('/debug/test-sheets')
+def test_sheets():
+    """Simple test of Google Sheets connection"""
+    try:
+        from googleapiclient.discovery import build
+        from google.oauth2.service_account import Credentials
+
+        # Get the raw private key
+        raw_key = os.getenv('GOOGLE_PRIVATE_KEY', '')
+
+        # Try different key formats
+        formats_tried = []
+
+        # Format 1: Replace \n
+        key1 = raw_key.replace('\\n', '\n')
+        formats_tried.append(f"Format 1 - length: {len(key1)}, starts with BEGIN: {key1.startswith('-----BEGIN')}")
+
+        # Format 2: As is
+        key2 = raw_key
+        formats_tried.append(f"Format 2 - length: {len(key2)}, starts with BEGIN: {key2.startswith('-----BEGIN')}")
+
+        # Try creating credentials with format 1
+        service_account_info = {
+            "type": "service_account",
+            "project_id": os.getenv('GOOGLE_PROJECT_ID'),
+            "private_key_id": os.getenv('GOOGLE_PRIVATE_KEY_ID'),
+            "private_key": key1,
+            "client_email": os.getenv('GOOGLE_CLIENT_EMAIL'),
+            "client_id": os.getenv('GOOGLE_CLIENT_ID'),
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+        }
+
+        creds = Credentials.from_service_account_info(
+            service_account_info,
+            scopes=['https://www.googleapis.com/auth/spreadsheets.readonly']
+        )
+
+        service = build('sheets', 'v4', credentials=creds)
+
+        # Test actual API call
+        spreadsheet_id = os.getenv('GOOGLE_SPREADSHEET_ID', '').strip('"\'')
+        result = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+
+        return jsonify({
+            'success': True,
+            'spreadsheet_title': result.get('properties', {}).get('title', 'Unknown'),
+            'formats_tried': formats_tried
+        })
+
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'error_type': type(e).__name__,
+            'formats_tried': formats_tried
+        })
+
 @app.route('/debug/status')
 def debug_status():
-    # Test Google Sheets service
+    # Test Google Sheets service with detailed error capture
     service_status = "unknown"
     service_error = None
+    debug_logs = []
+
+    # Capture print statements
+    import io
+    from contextlib import redirect_stdout
+
+    f = io.StringIO()
+
     try:
-        service = get_google_sheets_service()
+        with redirect_stdout(f):
+            service = get_google_sheets_service()
+            debug_logs = f.getvalue().split('\n')
+
         if service:
             service_status = "success"
         else:
             service_status = "failed"
+            service_error = "Service returned None"
     except Exception as e:
         service_status = "error"
         service_error = str(e)
+        debug_logs = f.getvalue().split('\n')
 
     return jsonify({
         'status': 'running',
@@ -220,7 +309,8 @@ def debug_status():
         },
         'google_sheets_service': {
             'status': service_status,
-            'error': service_error
+            'error': service_error,
+            'debug_logs': [log for log in debug_logs if log.strip()]
         },
         'credentials_check': {
             'spreadsheet_id': os.getenv('GOOGLE_SPREADSHEET_ID', 'NOT_SET')[:20] + '...' if os.getenv('GOOGLE_SPREADSHEET_ID') else 'NOT_SET',
