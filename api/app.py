@@ -29,13 +29,35 @@ def get_google_sheets_service():
         from googleapiclient.discovery import build
         from google.oauth2.service_account import Credentials
 
+        # Get environment variables
+        project_id = os.getenv('GOOGLE_PROJECT_ID')
+        private_key = os.getenv('GOOGLE_PRIVATE_KEY')
+        client_email = os.getenv('GOOGLE_CLIENT_EMAIL')
+
+        # Debug: Check what we have
+        print(f"Debug - project_id exists: {bool(project_id)}")
+        print(f"Debug - private_key exists: {bool(private_key)}")
+        print(f"Debug - client_email exists: {bool(client_email)}")
+
+        if private_key:
+            print(f"Debug - private_key length: {len(private_key)}")
+            print(f"Debug - private_key starts with BEGIN: {private_key.startswith('-----BEGIN')}")
+
+        # Check required fields first
+        if not project_id:
+            raise Exception("GOOGLE_PROJECT_ID is missing")
+        if not private_key:
+            raise Exception("GOOGLE_PRIVATE_KEY is missing")
+        if not client_email:
+            raise Exception("GOOGLE_CLIENT_EMAIL is missing")
+
         # Build service account info from environment variables
         service_account_info = {
             "type": "service_account",
-            "project_id": os.getenv('GOOGLE_PROJECT_ID'),
+            "project_id": project_id,
             "private_key_id": os.getenv('GOOGLE_PRIVATE_KEY_ID'),
-            "private_key": os.getenv('GOOGLE_PRIVATE_KEY'),
-            "client_email": os.getenv('GOOGLE_CLIENT_EMAIL'),
+            "private_key": private_key,
+            "client_email": client_email,
             "client_id": os.getenv('GOOGLE_CLIENT_ID'),
             "auth_uri": "https://accounts.google.com/o/oauth2/auth",
             "token_uri": "https://oauth2.googleapis.com/token",
@@ -43,18 +65,15 @@ def get_google_sheets_service():
             "client_x509_cert_url": os.getenv('GOOGLE_CLIENT_CERT_URL')
         }
 
-        # Check required fields
-        if not all([service_account_info["project_id"],
-                   service_account_info["private_key"],
-                   service_account_info["client_email"]]):
-            raise Exception("Missing required Google credentials")
-
+        print("Debug - Creating credentials...")
         creds = Credentials.from_service_account_info(
             service_account_info,
             scopes=['https://www.googleapis.com/auth/spreadsheets.readonly']
         )
 
+        print("Debug - Building service...")
         return build('sheets', 'v4', credentials=creds)
+
     except Exception as e:
         print(f"Google Sheets service error: {e}")
         return None
@@ -152,13 +171,42 @@ def get_categories():
 
 @app.route('/debug/status')
 def debug_status():
+    # Test Google Sheets service
+    service_status = "unknown"
+    service_error = None
+    try:
+        service = get_google_sheets_service()
+        if service:
+            service_status = "success"
+        else:
+            service_status = "failed"
+    except Exception as e:
+        service_status = "error"
+        service_error = str(e)
+
     return jsonify({
         'status': 'running',
         'flask_env': os.getenv('FLASK_ENV', 'not_set'),
-        'has_secret_key': bool(os.getenv('FLASK_SECRET_KEY')),
-        'has_spreadsheet_id': bool(os.getenv('GOOGLE_SPREADSHEET_ID')),
-        'has_project_id': bool(os.getenv('GOOGLE_PROJECT_ID')),
-        'has_client_email': bool(os.getenv('GOOGLE_CLIENT_EMAIL'))
+        'environment_variables': {
+            'has_secret_key': bool(os.getenv('FLASK_SECRET_KEY')),
+            'has_spreadsheet_id': bool(os.getenv('GOOGLE_SPREADSHEET_ID')),
+            'has_project_id': bool(os.getenv('GOOGLE_PROJECT_ID')),
+            'has_private_key': bool(os.getenv('GOOGLE_PRIVATE_KEY')),
+            'has_client_email': bool(os.getenv('GOOGLE_CLIENT_EMAIL')),
+            'has_private_key_id': bool(os.getenv('GOOGLE_PRIVATE_KEY_ID')),
+            'has_client_id': bool(os.getenv('GOOGLE_CLIENT_ID')),
+            'has_client_cert_url': bool(os.getenv('GOOGLE_CLIENT_CERT_URL'))
+        },
+        'google_sheets_service': {
+            'status': service_status,
+            'error': service_error
+        },
+        'credentials_check': {
+            'spreadsheet_id': os.getenv('GOOGLE_SPREADSHEET_ID', 'NOT_SET')[:20] + '...' if os.getenv('GOOGLE_SPREADSHEET_ID') else 'NOT_SET',
+            'project_id': os.getenv('GOOGLE_PROJECT_ID', 'NOT_SET'),
+            'client_email': os.getenv('GOOGLE_CLIENT_EMAIL', 'NOT_SET'),
+            'private_key_length': len(os.getenv('GOOGLE_PRIVATE_KEY', '')) if os.getenv('GOOGLE_PRIVATE_KEY') else 0
+        }
     })
 
 # Vercel expects this
