@@ -34,10 +34,19 @@ def get_google_sheets_service():
         private_key = os.getenv('GOOGLE_PRIVATE_KEY')
         client_email = os.getenv('GOOGLE_CLIENT_EMAIL')
 
-        # Fix private key formatting - Vercel often removes newlines
+        # Fix private key formatting - Handle various formats
         if private_key:
+            # Remove outer quotes if present
+            private_key = private_key.strip('"\'')
+
+            # Handle JSON array format (key split into multiple strings)
+            if private_key.startswith('"') or '","' in private_key:
+                # Remove all quotes and commas, then join
+                private_key = private_key.replace('"', '').replace(',', '\n')
+
             # Ensure proper line breaks
             private_key = private_key.replace('\\n', '\n')
+
             # If the key doesn't have proper headers, it might be malformed
             if 'BEGIN PRIVATE KEY' in private_key and '\n' not in private_key:
                 # Split the key into proper lines
@@ -221,13 +230,16 @@ def test_sheets():
         # Try different key formats
         formats_tried = []
 
-        # Format 1: Replace \n
-        key1 = raw_key.replace('\\n', '\n')
-        formats_tried.append(f"Format 1 - length: {len(key1)}, starts with BEGIN: {key1.startswith('-----BEGIN')}")
+        # Format 1: Clean and fix the key
+        key1 = raw_key.strip('"\'')
+        if key1.startswith('"') or '","' in key1:
+            key1 = key1.replace('"', '').replace(',', '\n')
+        key1 = key1.replace('\\n', '\n')
+        formats_tried.append(f"Format 1 (fixed) - length: {len(key1)}, starts with BEGIN: {key1.startswith('-----BEGIN')}")
 
         # Format 2: As is
         key2 = raw_key
-        formats_tried.append(f"Format 2 - length: {len(key2)}, starts with BEGIN: {key2.startswith('-----BEGIN')}")
+        formats_tried.append(f"Format 2 (raw) - length: {len(key2)}, starts with BEGIN: {key2.startswith('-----BEGIN')}")
 
         # Try creating credentials with format 1
         service_account_info = {
