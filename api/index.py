@@ -218,5 +218,5 @@ def debug_status():
         'python_path': sys.path[:3]  # First 3 entries
     })
 
-# For Vercel
-handler = app
+# For Vercel - proper WSGI app export
+app.wsgi_app = app.wsgi_app
