@@ -6,6 +6,7 @@ import secrets
 import json
 import random
 import string
+import time
 import base64
 import io
 from datetime import datetime, timedelta
@@ -36,6 +37,9 @@ class SimpleCaptchaManager:
     def generate_captcha(self, session_id):
         """Generate a simple captcha"""
         try:
+            # Ensure randomness by seeding with current time and session
+            random.seed(time.time_ns() + hash(session_id))
+
             # Generate 4-digit code
             code = ''.join(random.choices(string.digits, k=4))
 
@@ -61,7 +65,6 @@ class SimpleCaptchaManager:
                 'expires_at': expires.isoformat()
             }
         except Exception as e:
-            print(f"Captcha generation error: {e}")
             return None
 
     def _create_captcha_image(self, code):
@@ -128,6 +131,9 @@ class SimpleCaptchaManager:
         # Verify code
         if user_input.strip() == captcha_data['code']:
             session['captcha']['verified'] = True
+            session['captcha']['verified_at'] = datetime.now().isoformat()
+            # Reset search count after successful verification to give user grace period
+            session['search_count'] = 0
             return {'success': True, 'message': 'Captcha verificado correctamente'}
         else:
             session['captcha']['attempts'] += 1
@@ -139,19 +145,32 @@ class SimpleCaptchaManager:
                 return {'success': False, 'error': 'Código incorrecto. Se agotaron los intentos.'}
 
     def is_verified(self, session_id):
-        """Check if captcha is verified"""
+        """Check if captcha is verified and still valid"""
         if 'captcha' not in session:
             return False
 
         captcha_data = session['captcha']
 
-        # Check expiry
+        # Check if verified
+        if not captcha_data.get('verified', False):
+            return False
+
+        # Check expiry of the captcha itself
         expires = datetime.fromisoformat(captcha_data['expires'])
         if datetime.now() > expires:
             session.pop('captcha', None)
             return False
 
-        return captcha_data.get('verified', False)
+        # Check if verification is still within grace period (15 minutes from verification)
+        verified_at = captcha_data.get('verified_at')
+        if verified_at:
+            verification_time = datetime.fromisoformat(verified_at)
+            grace_period = timedelta(minutes=self.timeout_minutes)
+            if datetime.now() > verification_time + grace_period:
+                session.pop('captcha', None)
+                return False
+
+        return True
 
 # Initialize captcha manager
 captcha_manager = SimpleCaptchaManager()
@@ -195,17 +214,6 @@ def get_google_sheets_service():
                         formatted_content.append(key_content[i:i+64])
                     private_key = parts[0] + '\n' + '\n'.join(formatted_content) + '\n' + parts[2]
 
-        # Debug: Check what we have
-        print(f"Debug - project_id exists: {bool(project_id)}")
-        print(f"Debug - private_key exists: {bool(private_key)}")
-        print(f"Debug - client_email exists: {bool(client_email)}")
-
-        if private_key:
-            print(f"Debug - private_key length: {len(private_key)}")
-            print(f"Debug - private_key starts with BEGIN: {private_key.startswith('-----BEGIN')}")
-            print(f"Debug - private_key line count: {len(private_key.split(chr(10)))}")
-            print(f"Debug - private_key first 50 chars: {private_key[:50]}")
-            print(f"Debug - private_key last 50 chars: {private_key[-50:]}")
 
         # Check required fields first
         if not project_id:
@@ -229,30 +237,17 @@ def get_google_sheets_service():
             "client_x509_cert_url": os.getenv('GOOGLE_CLIENT_CERT_URL')
         }
 
-        print("Debug - Creating credentials...")
         creds = Credentials.from_service_account_info(
             service_account_info,
             scopes=['https://www.googleapis.com/auth/spreadsheets.readonly']
         )
 
-        print("Debug - Building service...")
         service = build('sheets', 'v4', credentials=creds)
 
-        # Test the service with a simple call
-        print("Debug - Testing service...")
-        try:
-            # Try to get spreadsheet metadata
-            test_id = os.getenv('GOOGLE_SPREADSHEET_ID', '').strip('"\'')
-            if test_id:
-                spreadsheet = service.spreadsheets().get(spreadsheetId=test_id).execute()
-                print(f"Debug - Service test successful, found spreadsheet: {spreadsheet.get('properties', {}).get('title', 'Unknown')}")
-        except Exception as test_error:
-            print(f"Debug - Service test failed: {test_error}")
 
         return service
 
     except Exception as e:
-        print(f"Google Sheets service error: {e}")
         return None
 
 def get_books_data():
@@ -264,7 +259,6 @@ def get_books_data():
     # Clean spreadsheet ID - remove quotes if present
     spreadsheet_id = spreadsheet_id.strip('"\'')
 
-    print(f"Debug - cleaned spreadsheet_id: {spreadsheet_id}")
 
     service = get_google_sheets_service()
     if not service:
@@ -296,7 +290,6 @@ def get_books_data():
                 all_books.append(book)
 
         except Exception as e:
-            print(f"Error reading sheet '{sheet_name}': {e}")
             continue
 
     return all_books
@@ -342,8 +335,11 @@ def search():
     search_count += 1
     session['search_count'] = search_count
 
-    # Require captcha after 3 searches
-    if search_count > 3:
+    # Check if user has valid captcha verification
+    captcha_verified = captcha_manager.is_verified(session_id)
+
+    # Require captcha after 3 searches, unless already verified
+    if search_count > 3 and not captcha_verified:
         if not captcha_code:
             return jsonify({
                 'books': [],
@@ -351,16 +347,14 @@ def search():
                 'error': 'Se requiere verificación captcha'
             })
 
-        # Verify captcha
-        if not captcha_manager.is_verified(session_id):
-            # Try to verify the provided captcha
-            verification_result = captcha_manager.verify_captcha(session_id, captcha_code)
-            if not verification_result['success']:
-                return jsonify({
-                    'books': [],
-                    'captcha_required': True,
-                    'error': verification_result['error']
-                })
+        # Try to verify the provided captcha
+        verification_result = captcha_manager.verify_captcha(session_id, captcha_code)
+        if not verification_result['success']:
+            return jsonify({
+                'books': [],
+                'captcha_required': True,
+                'error': verification_result['error']
+            })
 
     try:
         books = search_books(query, category)
@@ -405,7 +399,6 @@ def generate_captcha():
             }), 500
 
     except Exception as e:
-        print(f"Error generating captcha: {e}")
         return jsonify({
             'success': False,
             'error': 'Error interno del servidor'
@@ -439,126 +432,11 @@ def verify_captcha():
             return jsonify(result), 400
 
     except Exception as e:
-        print(f"Error verifying captcha: {e}")
         return jsonify({
             'success': False,
             'error': 'Error interno del servidor'
         }), 500
 
-@app.route('/debug/test-sheets')
-def test_sheets():
-    """Simple test of Google Sheets connection"""
-    try:
-        from googleapiclient.discovery import build
-        from google.oauth2.service_account import Credentials
-
-        # Get the raw private key
-        raw_key = os.getenv('GOOGLE_PRIVATE_KEY', '')
-
-        # Try different key formats
-        formats_tried = []
-
-        # Format 1: Clean and fix the key
-        key1 = raw_key.strip('"\'')
-        if key1.startswith('"') or '","' in key1:
-            key1 = key1.replace('"', '').replace(',', '\n')
-        key1 = key1.replace('\\n', '\n')
-        formats_tried.append(f"Format 1 (fixed) - length: {len(key1)}, starts with BEGIN: {key1.startswith('-----BEGIN')}")
-
-        # Format 2: As is
-        key2 = raw_key
-        formats_tried.append(f"Format 2 (raw) - length: {len(key2)}, starts with BEGIN: {key2.startswith('-----BEGIN')}")
-
-        # Try creating credentials with format 1
-        service_account_info = {
-            "type": "service_account",
-            "project_id": os.getenv('GOOGLE_PROJECT_ID'),
-            "private_key_id": os.getenv('GOOGLE_PRIVATE_KEY_ID'),
-            "private_key": key1,
-            "client_email": os.getenv('GOOGLE_CLIENT_EMAIL'),
-            "client_id": os.getenv('GOOGLE_CLIENT_ID'),
-            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-            "token_uri": "https://oauth2.googleapis.com/token",
-        }
-
-        creds = Credentials.from_service_account_info(
-            service_account_info,
-            scopes=['https://www.googleapis.com/auth/spreadsheets.readonly']
-        )
-
-        service = build('sheets', 'v4', credentials=creds)
-
-        # Test actual API call
-        spreadsheet_id = os.getenv('GOOGLE_SPREADSHEET_ID', '').strip('"\'')
-        result = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
-
-        return jsonify({
-            'success': True,
-            'spreadsheet_title': result.get('properties', {}).get('title', 'Unknown'),
-            'formats_tried': formats_tried
-        })
-
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e),
-            'error_type': type(e).__name__,
-            'formats_tried': formats_tried
-        })
-
-@app.route('/debug/status')
-def debug_status():
-    # Test Google Sheets service with detailed error capture
-    service_status = "unknown"
-    service_error = None
-    debug_logs = []
-
-    # Capture print statements
-    import io
-    from contextlib import redirect_stdout
-
-    f = io.StringIO()
-
-    try:
-        with redirect_stdout(f):
-            service = get_google_sheets_service()
-            debug_logs = f.getvalue().split('\n')
-
-        if service:
-            service_status = "success"
-        else:
-            service_status = "failed"
-            service_error = "Service returned None"
-    except Exception as e:
-        service_status = "error"
-        service_error = str(e)
-        debug_logs = f.getvalue().split('\n')
-
-    return jsonify({
-        'status': 'running',
-        'flask_env': os.getenv('FLASK_ENV', 'not_set'),
-        'environment_variables': {
-            'has_secret_key': bool(os.getenv('FLASK_SECRET_KEY')),
-            'has_spreadsheet_id': bool(os.getenv('GOOGLE_SPREADSHEET_ID')),
-            'has_project_id': bool(os.getenv('GOOGLE_PROJECT_ID')),
-            'has_private_key': bool(os.getenv('GOOGLE_PRIVATE_KEY')),
-            'has_client_email': bool(os.getenv('GOOGLE_CLIENT_EMAIL')),
-            'has_private_key_id': bool(os.getenv('GOOGLE_PRIVATE_KEY_ID')),
-            'has_client_id': bool(os.getenv('GOOGLE_CLIENT_ID')),
-            'has_client_cert_url': bool(os.getenv('GOOGLE_CLIENT_CERT_URL'))
-        },
-        'google_sheets_service': {
-            'status': service_status,
-            'error': service_error,
-            'debug_logs': [log for log in debug_logs if log.strip()]
-        },
-        'credentials_check': {
-            'spreadsheet_id': os.getenv('GOOGLE_SPREADSHEET_ID', 'NOT_SET')[:20] + '...' if os.getenv('GOOGLE_SPREADSHEET_ID') else 'NOT_SET',
-            'project_id': os.getenv('GOOGLE_PROJECT_ID', 'NOT_SET'),
-            'client_email': os.getenv('GOOGLE_CLIENT_EMAIL', 'NOT_SET'),
-            'private_key_length': len(os.getenv('GOOGLE_PRIVATE_KEY', '')) if os.getenv('GOOGLE_PRIVATE_KEY') else 0
-        }
-    })
 
 # Vercel expects this
 app = app
