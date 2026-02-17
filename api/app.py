@@ -34,6 +34,24 @@ def get_google_sheets_service():
         private_key = os.getenv('GOOGLE_PRIVATE_KEY')
         client_email = os.getenv('GOOGLE_CLIENT_EMAIL')
 
+        # Fix private key formatting - Vercel often removes newlines
+        if private_key:
+            # Ensure proper line breaks
+            private_key = private_key.replace('\\n', '\n')
+            # If the key doesn't have proper headers, it might be malformed
+            if 'BEGIN PRIVATE KEY' in private_key and '\n' not in private_key:
+                # Split the key into proper lines
+                private_key = private_key.replace('-----BEGIN PRIVATE KEY-----', '-----BEGIN PRIVATE KEY-----\n')
+                private_key = private_key.replace('-----END PRIVATE KEY-----', '\n-----END PRIVATE KEY-----')
+                # Add line breaks every 64 characters in the key content
+                parts = private_key.split('\n')
+                if len(parts) == 3 and len(parts[1]) > 64:  # Long key without breaks
+                    key_content = parts[1]
+                    formatted_content = []
+                    for i in range(0, len(key_content), 64):
+                        formatted_content.append(key_content[i:i+64])
+                    private_key = parts[0] + '\n' + '\n'.join(formatted_content) + '\n' + parts[2]
+
         # Debug: Check what we have
         print(f"Debug - project_id exists: {bool(project_id)}")
         print(f"Debug - private_key exists: {bool(private_key)}")
@@ -42,6 +60,9 @@ def get_google_sheets_service():
         if private_key:
             print(f"Debug - private_key length: {len(private_key)}")
             print(f"Debug - private_key starts with BEGIN: {private_key.startswith('-----BEGIN')}")
+            print(f"Debug - private_key line count: {len(private_key.split(chr(10)))}")
+            print(f"Debug - private_key first 50 chars: {private_key[:50]}")
+            print(f"Debug - private_key last 50 chars: {private_key[-50:]}")
 
         # Check required fields first
         if not project_id:
