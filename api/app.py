@@ -4,7 +4,12 @@ import sys
 import uuid
 import secrets
 import json
+import random
+import string
+import base64
+import io
 from datetime import datetime, timedelta
+from PIL import Image, ImageDraw, ImageFont
 
 # Add parent directory to Python path
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -21,6 +26,135 @@ app.secret_key = secret_key
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['PERMANENT_SESSION_LIFETIME'] = 3600
+
+# Simple captcha manager for serverless
+class SimpleCaptchaManager:
+    def __init__(self):
+        self.timeout_minutes = 15
+        self.max_attempts = 3
+
+    def generate_captcha(self, session_id):
+        """Generate a simple captcha"""
+        try:
+            # Generate 4-digit code
+            code = ''.join(random.choices(string.digits, k=4))
+
+            # Create simple image
+            img = self._create_captcha_image(code)
+
+            # Convert to base64
+            img_buffer = io.BytesIO()
+            img.save(img_buffer, format='PNG')
+            img_buffer.seek(0)
+            img_base64 = base64.b64encode(img_buffer.getvalue()).decode()
+
+            # Store in session
+            expires = datetime.now() + timedelta(minutes=self.timeout_minutes)
+            session['captcha'] = {
+                'code': code,
+                'expires': expires.isoformat(),
+                'attempts': 0
+            }
+
+            return {
+                'image': f"data:image/png;base64,{img_base64}",
+                'expires_at': expires.isoformat()
+            }
+        except Exception as e:
+            print(f"Captcha generation error: {e}")
+            return None
+
+    def _create_captcha_image(self, code):
+        """Create simple captcha image"""
+        width, height = 160, 60
+        img = Image.new('RGB', (width, height), color='white')
+        draw = ImageDraw.Draw(img)
+
+        # Add background noise
+        for _ in range(30):
+            x, y = random.randint(0, width), random.randint(0, height)
+            draw.point((x, y), fill=(200, 200, 200))
+
+        # Draw code
+        try:
+            font = ImageFont.load_default()
+        except:
+            font = None
+
+        # Calculate position
+        if font:
+            bbox = draw.textbbox((0, 0), code, font=font)
+            text_width = bbox[2] - bbox[0]
+            text_height = bbox[3] - bbox[1]
+        else:
+            text_width, text_height = 40, 20
+
+        x = (width - text_width) // 2
+        y = (height - text_height) // 2
+
+        # Draw text with variations
+        for i, char in enumerate(code):
+            char_x = x + (i * text_width // len(code))
+            char_y = y + random.randint(-3, 3)
+            color = random.choice([(0, 0, 0), (50, 50, 50), (100, 100, 100)])
+            draw.text((char_x, char_y), char, font=font, fill=color)
+
+        # Add noise lines
+        for _ in range(2):
+            start = (random.randint(0, width), random.randint(0, height))
+            end = (random.randint(0, width), random.randint(0, height))
+            draw.line([start, end], fill=(150, 150, 150), width=1)
+
+        return img
+
+    def verify_captcha(self, session_id, user_input):
+        """Verify captcha"""
+        if 'captcha' not in session:
+            return {'success': False, 'error': 'Captcha no encontrado. Genera uno nuevo.'}
+
+        captcha_data = session['captcha']
+
+        # Check expiry
+        expires = datetime.fromisoformat(captcha_data['expires'])
+        if datetime.now() > expires:
+            session.pop('captcha', None)
+            return {'success': False, 'error': 'Captcha expirado. Genera uno nuevo.'}
+
+        # Check attempts
+        if captcha_data['attempts'] >= self.max_attempts:
+            session.pop('captcha', None)
+            return {'success': False, 'error': 'Demasiados intentos. Genera un captcha nuevo.'}
+
+        # Verify code
+        if user_input.strip() == captcha_data['code']:
+            session['captcha']['verified'] = True
+            return {'success': True, 'message': 'Captcha verificado correctamente'}
+        else:
+            session['captcha']['attempts'] += 1
+            remaining = self.max_attempts - session['captcha']['attempts']
+            if remaining > 0:
+                return {'success': False, 'error': f'Código incorrecto. Te quedan {remaining} intentos.'}
+            else:
+                session.pop('captcha', None)
+                return {'success': False, 'error': 'Código incorrecto. Se agotaron los intentos.'}
+
+    def is_verified(self, session_id):
+        """Check if captcha is verified"""
+        if 'captcha' not in session:
+            return False
+
+        captcha_data = session['captcha']
+
+        # Check expiry
+        expires = datetime.fromisoformat(captcha_data['expires'])
+        if datetime.now() > expires:
+            session.pop('captcha', None)
+            return False
+
+        return captcha_data.get('verified', False)
+
+# Initialize captcha manager
+captcha_manager = SimpleCaptchaManager()
 
 # Simple Google Sheets integration for Vercel
 def get_google_sheets_service():
@@ -192,9 +326,41 @@ def index():
 def search():
     query = request.args.get('q', '')
     category = request.args.get('category', '')
+    captcha_code = request.args.get('captcha', '')
 
     if not query:
         return jsonify({'books': [], 'error': 'No se proporcionó término de búsqueda'})
+
+    # Simple rate limiting - require captcha after a few searches
+    session_id = session.get('session_id')
+    if not session_id:
+        session_id = str(uuid.uuid4())
+        session['session_id'] = session_id
+
+    # Track search count
+    search_count = session.get('search_count', 0)
+    search_count += 1
+    session['search_count'] = search_count
+
+    # Require captcha after 3 searches
+    if search_count > 3:
+        if not captcha_code:
+            return jsonify({
+                'books': [],
+                'captcha_required': True,
+                'error': 'Se requiere verificación captcha'
+            })
+
+        # Verify captcha
+        if not captcha_manager.is_verified(session_id):
+            # Try to verify the provided captcha
+            verification_result = captcha_manager.verify_captcha(session_id, captcha_code)
+            if not verification_result['success']:
+                return jsonify({
+                    'books': [],
+                    'captcha_required': True,
+                    'error': verification_result['error']
+                })
 
     try:
         books = search_books(query, category)
@@ -216,6 +382,68 @@ def get_categories():
         'categories': ["LIT. ADULTO", "LIT. JUVENIL ADOLESCENTE", "LIT. INFANTIL", "EDUCACIÓN", "MANUALES"],
         'error': None
     })
+
+@app.route('/api/captcha/generate', methods=['GET', 'POST'])
+def generate_captcha():
+    """Generate a new captcha"""
+    try:
+        session_id = session.get('session_id', str(uuid.uuid4()))
+        session['session_id'] = session_id
+
+        captcha_data = captcha_manager.generate_captcha(session_id)
+
+        if captcha_data:
+            return jsonify({
+                'success': True,
+                'captcha': captcha_data,
+                'message': 'Captcha generado correctamente'
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'No se pudo generar el captcha'
+            }), 500
+
+    except Exception as e:
+        print(f"Error generating captcha: {e}")
+        return jsonify({
+            'success': False,
+            'error': 'Error interno del servidor'
+        }), 500
+
+@app.route('/api/captcha/verify', methods=['POST'])
+def verify_captcha():
+    """Verify captcha code"""
+    try:
+        data = request.get_json() or {}
+        captcha_code = data.get('code', '')
+
+        if not captcha_code:
+            return jsonify({
+                'success': False,
+                'error': 'Código de captcha requerido'
+            }), 400
+
+        session_id = session.get('session_id')
+        if not session_id:
+            return jsonify({
+                'success': False,
+                'error': 'Sesión no válida'
+            }), 400
+
+        result = captcha_manager.verify_captcha(session_id, captcha_code)
+
+        if result['success']:
+            return jsonify(result)
+        else:
+            return jsonify(result), 400
+
+    except Exception as e:
+        print(f"Error verifying captcha: {e}")
+        return jsonify({
+            'success': False,
+            'error': 'Error interno del servidor'
+        }), 500
 
 @app.route('/debug/test-sheets')
 def test_sheets():
