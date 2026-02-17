@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  book-search:
+    build: .
+    ports:
+      - "8080:5000"
+    environment:
+      - GOOGLE_SPREADSHEET_ID=${GOOGLE_SPREADSHEET_ID}
+      - GOOGLE_PROJECT_ID=${GOOGLE_PROJECT_ID}
+      - GOOGLE_PRIVATE_KEY=${GOOGLE_PRIVATE_KEY}
+      - GOOGLE_CLIENT_EMAIL=${GOOGLE_CLIENT_EMAIL}
+      - GOOGLE_PRIVATE_KEY_ID=${GOOGLE_PRIVATE_KEY_ID}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_CERT_URL=${GOOGLE_CLIENT_CERT_URL}
+      - FLASK_SECRET_KEY=${FLASK_SECRET_KEY}
+      - FLASK_ENV=${FLASK_ENV:-development}
+      - HTTPS_ENABLED=${HTTPS_ENABLED:-false}
+    volumes:
+      - .:/app
+    command: python app.py

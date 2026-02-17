@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "./app.py",
+      "use": "@vercel/python"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "/"
+    }
+  ],
+  "env": {
+    "GOOGLE_SPREADSHEET_ID": "@google_spreadsheet_id",
+    "GOOGLE_SERVICE_ACCOUNT_JSON": "@google_service_account_json"
+  }
+}

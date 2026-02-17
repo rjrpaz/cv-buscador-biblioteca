@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Buscador de Libros</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 30px;
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+        }
+        .header-text {
+            text-align: left;
+        }
+        .search-container {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex: 1;
+            max-width: 600px;
+        }
+        .captcha-container {
+            display: none;
+            align-items: center;
+            gap: 10px;
+            margin-top: 10px;
+            padding: 10px;
+            background-color: #f8f9fa;
+            border-radius: 5px;
+            border: 1px solid #ddd;
+        }
+        .captcha-image {
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        .captcha-input {
+            width: 80px;
+            padding: 8px;
+            font-size: 16px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            text-align: center;
+        }
+        .captcha-refresh {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 8px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        .captcha-refresh:hover {
+            background: #0056b3;
+        }
+        .search-box {
+            width: 100%;
+            padding: 15px;
+            font-size: 16px;
+            border: 2px solid #ddd;
+            border-radius: 5px;
+            box-sizing: border-box;
+        }
+        .search-box:focus {
+            outline: none;
+            border-color: #4CAF50;
+        }
+        .search-button {
+            padding: 15px 30px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            white-space: nowrap;
+        }
+        .search-button:hover {
+            background-color: #45a049;
+        }
+        .loading {
+            text-align: center;
+            padding: 20px;
+            font-style: italic;
+            color: #666;
+        }
+        .error {
+            background-color: #ffebee;
+            color: #c62828;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 20px 0;
+        }
+        .results {
+            margin-top: 30px;
+        }
+        .book {
+            background: white;
+            padding: 20px;
+            margin-bottom: 20px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .book h3 {
+            margin: 0 0 10px 0;
+            color: #333;
+        }
+        .book-info {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 10px;
+            margin-top: 15px;
+        }
+        .book-field {
+            padding: 8px;
+            background-color: #f8f9fa;
+            border-radius: 4px;
+        }
+        .book-category {
+            display: inline-block;
+            padding: 4px 12px;
+            background-color: #e3f2fd;
+            color: #1976d2;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: bold;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+        }
+
+        /* Responsive design */
+        @media (max-width: 768px) {
+            .header {
+                flex-direction: column;
+                gap: 20px;
+                text-align: center;
+            }
+            .header-left {
+                flex-direction: column;
+                text-align: center;
+                gap: 15px;
+            }
+            .search-container {
+                max-width: 100%;
+            }
+            .header-text h1 {
+                margin: 0;
+            }
+            .header-text p {
+                margin: 5px 0 0 0;
+            }
+        }
+        .field-label {
+            font-weight: bold;
+            color: #555;
+        }
+        .field-value {
+            color: #333;
+            margin-left: 5px;
+        }
+        .no-results {
+            text-align: center;
+            padding: 40px;
+            color: #666;
+            font-style: italic;
+        }
+        .results-count {
+            margin-bottom: 20px;
+            font-weight: bold;
+            color: #555;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="header-left">
+            <img src="/static/img/Logo.jpg" alt="Logo" style="max-height: 80px; display: none;" onload="this.style.display='block';" onerror="this.style.display='none';">
+            <div class="header-text">
+                <h1>📚 Buscador de Libros</h1>
+                <p>Busca en la lista de libros de la biblioteca</p>
+            </div>
+        </div>
+        <div class="search-container">
+            <input type="text" id="searchInput" class="search-box" placeholder="Buscar libros por código, nombre, autor, editorial, categoría, etc...">
+            <button onclick="searchBooks()" class="search-button">Buscar</button>
+        </div>
+    </div>
+
+    <div id="captcha-container" class="captcha-container">
+        <span>Verifica que no eres un robot:</span>
+        <img id="captcha-image" class="captcha-image" onclick="generateCaptcha()" title="Haz clic para generar nuevo captcha">
+        <input type="text" id="captcha-input" class="captcha-input" placeholder="Código" maxlength="4">
+        <button onclick="generateCaptcha()" class="captcha-refresh">↻ Nuevo</button>
+    </div>
+
+    <div id="loading" class="loading" style="display: none;">
+        Buscando en tu biblioteca...
+    </div>
+
+    <div id="error" class="error" style="display: none;"></div>
+
+    <div id="results" class="results"></div>
+
+    <script>
+        let allBooks = [];
+        let captchaRequired = false;
+
+        // Load all books on page load
+        window.onload = function() {
+            loadAllBooks();
+        };
+
+        // Allow Enter key to trigger search
+        document.getElementById('searchInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                searchBooks();
+            }
+        });
+
+        // Allow Enter key in captcha input
+        document.getElementById('captcha-input').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                searchBooks();
+            }
+        });
+
+        async function loadAllBooks() {
+            try {
+                const response = await fetch('/api/books');
+                const data = await response.json();
+
+                if (data.error) {
+                    showError(data.error);
+                } else {
+                    allBooks = data.books;
+                    displayBooks(allBooks, 'Todos los libros de la biblioteca');
+                }
+            } catch (error) {
+                showError('Error al cargar los libros: ' + error.message);
+            }
+        }
+
+        async function searchBooks() {
+            const query = document.getElementById('searchInput').value.trim();
+
+            if (!query) {
+                displayBooks(allBooks, 'Todos los libros de la biblioteca');
+                return;
+            }
+
+            showLoading();
+            hideError();
+
+            try {
+                let searchUrl = `/search?q=${encodeURIComponent(query)}`;
+
+                // Add captcha if required and provided
+                if (captchaRequired) {
+                    const captchaCode = document.getElementById('captcha-input').value.trim();
+                    if (captchaCode) {
+                        searchUrl += `&captcha=${encodeURIComponent(captchaCode)}`;
+                    }
+                }
+
+                const response = await fetch(searchUrl);
+                const data = await response.json();
+
+                hideLoading();
+
+                if (data.captcha_required) {
+                    captchaRequired = true;
+                    showCaptcha();
+                    if (data.error) {
+                        showError(data.error);
+                    }
+                } else if (data.error) {
+                    showError(data.error);
+                } else {
+                    hideCaptcha();
+                    captchaRequired = false;
+                    displayBooks(data.books, `Resultados de búsqueda para "${query}"`);
+                }
+            } catch (error) {
+                hideLoading();
+                showError('Error en la búsqueda: ' + error.message);
+            }
+        }
+
+        async function generateCaptcha() {
+            try {
+                const response = await fetch('/api/captcha/generate');
+                const data = await response.json();
+
+                if (data.success) {
+                    document.getElementById('captcha-image').src = data.captcha.image;
+                    document.getElementById('captcha-input').value = '';
+                    document.getElementById('captcha-input').focus();
+                } else {
+                    showError('Error generando captcha: ' + data.error);
+                }
+            } catch (error) {
+                showError('Error generando captcha: ' + error.message);
+            }
+        }
+
+        function showCaptcha() {
+            document.getElementById('captcha-container').style.display = 'flex';
+            if (!document.getElementById('captcha-image').src.includes('data:image')) {
+                generateCaptcha();
+            }
+        }
+
+        function hideCaptcha() {
+            document.getElementById('captcha-container').style.display = 'none';
+        }
+
+        function displayBooks(books, title) {
+            const resultsDiv = document.getElementById('results');
+
+            if (books.length === 0) {
+                resultsDiv.innerHTML = `
+                    <div class="no-results">
+                        <h3>No se encontraron libros</h3>
+                        <p>Intenta con un término diferente o revisa la ortografía.</p>
+                    </div>
+                `;
+                return;
+            }
+
+            let html = `<div class="results-count">${title} (${books.length} libros encontrados)</div>`;
+
+            books.forEach(book => {
+                html += '<div class="book">';
+
+                // Use the first field as title, or "title" field if it exists
+                const titleField = book['NOMBRE DEL LIBRO'] || book.Title || book.title || book.Título || book.título || Object.values(book)[0] || 'Título Desconocido';
+                html += `<h3>${escapeHtml(titleField)}</h3>`;
+
+                // Add category badge
+                if (book['CATEGORÍA']) {
+                    html += `<div class="book-category">${escapeHtml(book['CATEGORÍA'])}</div>`;
+                }
+
+                html += '<div class="book-info">';
+
+                // Display all fields except the one used as title
+                Object.entries(book).forEach(([key, value]) => {
+                    if (value && value.trim() !== '' && !['title', 'título', 'nombre del libro', 'categoría'].includes(key.toLowerCase())) {
+                        html += `
+                            <div class="book-field">
+                                <span class="field-label">${escapeHtml(key)}:</span>
+                                <span class="field-value">${escapeHtml(value)}</span>
+                            </div>
+                        `;
+                    }
+                });
+
+                html += '</div></div>';
+            });
+
+            resultsDiv.innerHTML = html;
+        }
+
+        function showLoading() {
+            document.getElementById('loading').style.display = 'block';
+            document.getElementById('results').innerHTML = '';
+        }
+
+        function hideLoading() {
+            document.getElementById('loading').style.display = 'none';
+        }
+
+        function showError(message) {
+            const errorDiv = document.getElementById('error');
+            errorDiv.textContent = message;
+            errorDiv.style.display = 'block';
+        }
+
+        function hideError() {
+            document.getElementById('error').style.display = 'none';
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+    </script>
+</body>
+</html>
