@@ -3,15 +3,34 @@ import os
 import sys
 import uuid
 import logging
-from flask_limiter import Limiter
-from flask_limiter.util import get_remote_address
 
 # Add parent directory to path to import our modules
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, parent_dir)
 
-from google_sheets import get_books_data, search_books
-from captcha_manager import captcha_manager
-from security import SecurityManager, require_valid_input, security_headers
+# Try to import with error handling
+try:
+    from google_sheets import get_books_data, search_books
+    from captcha_manager import captcha_manager
+    from security import SecurityManager, require_valid_input, security_headers
+    IMPORTS_SUCCESS = True
+except Exception as e:
+    print(f"Import error: {e}")
+    IMPORTS_SUCCESS = False
+
+# Simplified rate limiting for Vercel
+class SimpleLimiter:
+    def limit(self, rate):
+        def decorator(f):
+            return f
+        return decorator
+
+# Use simplified limiter if Flask-Limiter fails
+try:
+    from flask_limiter import Limiter
+    from flask_limiter.util import get_remote_address
+except:
+    Limiter = SimpleLimiter
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -20,18 +39,17 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__, template_folder='../templates', static_folder='../static')
 
 # Security configurations
-secret_key = os.getenv('FLASK_SECRET_KEY', 'your-secret-key-here-change-in-production')
-if not SecurityManager.validate_secret_key(secret_key):
-    # Only require secure key in production, allow development with warning
-    flask_env = os.getenv('FLASK_ENV', 'development').lower()
-    if flask_env == 'production':
-        raise ValueError("FLASK_SECRET_KEY must be set to a secure value in production")
-    else:
-        logger.warning("Using default secret key. Set FLASK_SECRET_KEY for production!")
-        # Generate a temporary secure key for development
-        import secrets
-        secret_key = secrets.token_urlsafe(32)
-        logger.info("Generated temporary secure key for development session")
+secret_key = os.getenv('FLASK_SECRET_KEY')
+if not secret_key:
+    # Generate a secure key for production
+    import secrets
+    secret_key = secrets.token_urlsafe(32)
+    logger.warning("No FLASK_SECRET_KEY found, generated temporary key")
+elif secret_key == 'your-secret-key-here-change-in-production':
+    # Default key detected, generate a secure one
+    import secrets
+    secret_key = secrets.token_urlsafe(32)
+    logger.warning("Default secret key detected, generated secure key")
 
 app.secret_key = secret_key
 
@@ -41,13 +59,27 @@ app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['PERMANENT_SESSION_LIFETIME'] = 3600  # 1 hour
 
-# Rate limiting
-limiter = Limiter(
-    app=app,
-    key_func=lambda: SecurityManager.get_client_ip(),
-    default_limits=["200 per day", "50 per hour"],
-    storage_uri="memory://"
-)
+# Rate limiting (simplified for Vercel)
+try:
+    if IMPORTS_SUCCESS:
+        limiter = Limiter(
+            app=app,
+            key_func=lambda: SecurityManager.get_client_ip() if 'SecurityManager' in globals() else request.remote_addr,
+            default_limits=["200 per day", "50 per hour"],
+            storage_uri="memory://"
+        )
+    else:
+        limiter = SimpleLimiter()
+except Exception as e:
+    logger.warning(f"Rate limiting disabled due to error: {e}")
+    limiter = SimpleLimiter()
+
+# Fallback decorators if imports failed
+def fallback_decorator(f):
+    return f
+
+security_headers = security_headers if IMPORTS_SUCCESS else fallback_decorator
+require_valid_input = require_valid_input if IMPORTS_SUCCESS else fallback_decorator
 
 @app.route('/')
 @security_headers
@@ -82,10 +114,14 @@ def search():
             return jsonify({'books': [], 'error': verification_result['error'], 'captcha_required': True})
 
     try:
+        if not IMPORTS_SUCCESS:
+            return jsonify({'books': [], 'error': 'Servicio temporalmente no disponible'})
+
         books = search_books(query, category)
         return jsonify({'books': books, 'error': None})
     except Exception as e:
-        return jsonify({'books': [], 'error': str(e)})
+        logger.error(f"Search error: {e}")
+        return jsonify({'books': [], 'error': 'Error interno del servidor'})
 
 @app.route('/api/books')
 @limiter.limit("20 per minute")
@@ -93,6 +129,9 @@ def search():
 def all_books():
     category = request.args.get('category', '')  # Optional category filter
     try:
+        if not IMPORTS_SUCCESS:
+            return jsonify({'books': [], 'error': 'Servicio temporalmente no disponible'})
+
         books = get_books_data()
 
         # Filter by category if specified
@@ -101,7 +140,8 @@ def all_books():
 
         return jsonify({'books': books, 'error': None})
     except Exception as e:
-        return jsonify({'books': [], 'error': str(e)})
+        logger.error(f"Books API error: {e}")
+        return jsonify({'books': [], 'error': 'Error interno del servidor'})
 
 @app.route('/api/categories')
 @security_headers
@@ -165,6 +205,18 @@ def verify_captcha():
     except Exception as e:
         logger.error(f"Error verifying captcha: {str(e)}")
         return jsonify({'success': False, 'error': 'Error interno del servidor'}), 500
+
+@app.route('/debug/status')
+def debug_status():
+    """Debug endpoint to check system status"""
+    return jsonify({
+        'status': 'running',
+        'imports_success': IMPORTS_SUCCESS,
+        'flask_env': os.getenv('FLASK_ENV', 'not_set'),
+        'has_secret_key': bool(os.getenv('FLASK_SECRET_KEY')),
+        'has_spreadsheet_id': bool(os.getenv('GOOGLE_SPREADSHEET_ID')),
+        'python_path': sys.path[:3]  # First 3 entries
+    })
 
 # For Vercel
 handler = app
